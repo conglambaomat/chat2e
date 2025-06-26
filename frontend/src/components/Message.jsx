@@ -6,7 +6,10 @@ import JSEncrypt from 'jsencrypt';
 import toast from 'react-hot-toast';
 import { Loader, Download, FileText, FileWarning, Trash2 } from 'lucide-react';
 import DecryptedMessageContent from './DecryptedMessageContent';
+import { axiosInstance } from '../lib/axios';
 
+
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 
 const formatFileSize = (bytes) => {
     if (bytes === 0) return '0 Bytes';
@@ -25,8 +28,11 @@ const Message = ({ message }) => {
     const selectedMessageId = useChatStore((state) => state.selectedMessageId);
     const setSelectedMessageId = useChatStore((state) => state.setSelectedMessageId);
     const deleteMessage = useChatStore((state) => state.deleteMessage);
+    const updateMessageReaction = useChatStore((state) => state.updateMessageReaction);
 
     const [isDownloading, setIsDownloading] = useState(false);
+    const [isReactionPickerOpen, setIsReactionPickerOpen] = useState(false);
+    const [isReacting, setIsReacting] = useState(false);
 
     const isSender = message.senderId === authUser?._id;
     const chatClassName = isSender ? "chat-end" : "chat-start";
@@ -210,16 +216,97 @@ const Message = ({ message }) => {
         }
     }, [message, privateKey, isSender, setSelectedMessageId]);
 
+
+    // Helper: Get reaction summary (emoji -> [userIds])
+    const reactionSummary = useMemo(() => {
+        const summary = {};
+        if (Array.isArray(message.reactions)) {
+            message.reactions.forEach(r => {
+                if (!summary[r.emoji]) summary[r.emoji] = [];
+                summary[r.emoji].push(r.userId);
+            });
+        }
+        return summary;
+    }, [message.reactions]);
+
+
+    // Helper: Has current user reacted with this emoji?
+    const hasReacted = (emoji) => {
+        return reactionSummary[emoji]?.includes(authUser?._id);
+    };
+
+
+    // Handle reaction click
+    const handleReaction = async (emoji) => {
+        if (isReacting) return;
+        setIsReacting(true);
+        try {
+            const alreadyReacted = hasReacted(emoji);
+            const url = `/messages/${message._id}/reactions`;
+            if (alreadyReacted) {
+                await axiosInstance.delete(url, { data: { emoji } });
+            } else {
+                await axiosInstance.post(url, { emoji });
+            }
+            // Optimistic UI: update local state (socket will sync)
+            updateMessageReaction(message._id, emoji, authUser._id, !alreadyReacted);
+        } catch (err) {
+            toast.error('Failed to update reaction');
+        } finally {
+            setIsReacting(false);
+            setIsReactionPickerOpen(false);
+        }
+    };
+
+
+    // Reaction picker UI
+    const renderReactionPicker = () => (
+        <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-white shadow-lg rounded-full flex z-20 border border-gray-200 p-1">
+            {REACTION_EMOJIS.map((emoji) => (
+                <button
+                    key={emoji}
+                    className={`text-xl px-2 py-1 hover:bg-gray-100 rounded-full transition ${hasReacted(emoji) ? 'ring-2 ring-sky-400' : ''}`}
+                    onClick={(e) => { e.stopPropagation(); handleReaction(emoji); }}
+                    disabled={isReacting}
+                >
+                    {emoji}
+                </button>
+            ))}
+        </div>
+    );
+
+
+    // Render reactions under message
+    const renderReactions = () => {
+        if (!message.reactions || message.reactions.length === 0) return null;
+        // Group by emoji, show count, highlight if user reacted
+        return (
+            <div className="flex gap-1 mt-1 flex-wrap">
+                {Object.entries(reactionSummary).map(([emoji, userIds]) => (
+                    <span
+                        key={emoji}
+                        className={`px-2 py-0.5 rounded-full text-sm bg-white/80 border border-gray-300 flex items-center gap-1 select-none ${userIds.includes(authUser?._id) ? 'ring-2 ring-sky-400' : ''}`}
+                    >
+                        {emoji} <span className="text-xs font-semibold">{userIds.length}</span>
+                    </span>
+                ))}
+            </div>
+        );
+    };
+
+
     return (
         <div
+            id={`msg-${message._id}`}
             className={`chat ${chatClassName} relative group ${isSender ? 'cursor-pointer' : ''}`}
             onClick={handleMessageClick}
+            onMouseEnter={() => setIsReactionPickerOpen(true)}
+            onMouseLeave={() => setIsReactionPickerOpen(false)}
         >
             {/* Delete Button - Show only for sender's messages when selected + hovered */}
             {isSender && isSelected && (
                 <button
                     onClick={handleDeleteClick}
-
                     className={`absolute ${isSender ? 'right-[calc(2.5rem+0.5rem)]' : 'left-[calc(2.5rem+0.5rem)]'} top-1/2 transform -translate-y-1/2
                                p-1.5 rounded-full bg-red-500 hover:bg-red-600 text-white
                                opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10`}
@@ -228,6 +315,9 @@ const Message = ({ message }) => {
                     <Trash2 size={18} />
                 </button>
             )}
+
+            {/* Reaction Picker Popup (show on hover/click) */}
+            {isReactionPickerOpen && renderReactionPicker()}
 
             <div className="chat-image avatar">
                 <div className="w-10 rounded-full">
@@ -255,13 +345,14 @@ const Message = ({ message }) => {
                         </div>
                     </div>
                 ) : (
-
                     <DecryptedMessageContent
                         message={message}
                         privateKey={privateKey}
                         isSender={isSender}
                     />
                 )}
+                {/* Reactions under message */}
+                {renderReactions()}
             </div>
             <div className="chat-footer opacity-50 text-xs flex gap-1 items-center mt-1">
                 {formattedTime}

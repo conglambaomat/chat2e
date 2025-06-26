@@ -259,6 +259,17 @@ export const useChatStore = create((set, get) => ({
         });
         console.log("[subscribeToMessages] 'messageDeleted' listener is set up.");
 
+
+        socket.off("messageReaction");
+        socket.on("messageReaction", ({ messageId, reactions }) => {
+            set((state) => ({
+                messages: state.messages.map(msg =>
+                    msg._id === messageId ? { ...msg, reactions } : msg
+                )
+            }));
+        });
+        console.log("[subscribeToMessages] 'messageReaction' listener is set up.");
+
     },
 
     unsubscribeFromMessages: () => {
@@ -266,6 +277,7 @@ export const useChatStore = create((set, get) => ({
         if (socket) {
             socket.off("newMessage");
             socket.off("messageDeleted");
+            socket.off("messageReaction");
         }
     },
 
@@ -368,5 +380,58 @@ export const useChatStore = create((set, get) => ({
             alert("Failed to delete message on the server. Message remains deleted locally.");
             set({ selectedMessageId: null });
         }
+    },
+
+    updateMessageReaction: (messageId, emoji, userId, add) => {
+        set((state) => ({
+            messages: state.messages.map(msg => {
+                if (msg._id !== messageId) return msg;
+                let newReactions = Array.isArray(msg.reactions) ? [...msg.reactions] : [];
+                if (add) {
+                    // Prevent duplicate reactions from the same user for the same emoji
+                    if (!newReactions.some(r => r.userId === userId && r.emoji === emoji)) {
+                        newReactions.push({ userId, emoji });
+                    }
+                } else {
+                    newReactions = newReactions.filter(r => !(r.userId === userId && r.emoji === emoji));
+                }
+                return { ...msg, reactions: newReactions };
+            })
+        }));
+    },
+
+    // Tìm kiếm tin nhắn trong cuộc trò chuyện hiện tại (tìm trên client, giải mã từng message)
+    searchMessages: async (query) => {
+        const { messages } = get();
+        const authUser = useAuthStore.getState().authUser;
+        const privateKey = useAuthStore.getState().privateKey;
+        if (!query.trim() || !privateKey || !authUser) return [];
+        // Import giải mã
+        const { JSEncrypt } = await import('jsencrypt');
+        const { base64ToArrayBuffer } = await import('../lib/utils');
+        // Duyệt và giải mã từng message
+        const results = [];
+        for (const msg of messages) {
+            try {
+                const isSender = msg.senderId === authUser._id;
+                const keyToUse = isSender ? msg.encryptedKeySender : msg.encryptedKey;
+                if (!keyToUse || !msg.iv || !msg.encryptedContent) continue;
+                const decryptor = new JSEncrypt();
+                decryptor.setPrivateKey(privateKey);
+                const decryptedAesKeyBase64 = decryptor.decrypt(keyToUse);
+                if (!decryptedAesKeyBase64) continue;
+                const aesKeyBuffer = base64ToArrayBuffer(decryptedAesKeyBase64);
+                const aesKey = await window.crypto.subtle.importKey("raw", aesKeyBuffer, { name: "AES-GCM", length: 256 }, true, ["decrypt"]);
+                const ivBuffer = base64ToArrayBuffer(msg.iv);
+                const encryptedContentBuffer = base64ToArrayBuffer(msg.encryptedContent);
+                const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuffer }, aesKey, encryptedContentBuffer);
+                const decoder = new TextDecoder();
+                const plain = decoder.decode(decrypted);
+                if (plain.toLowerCase().includes(query.toLowerCase())) {
+                    results.push({ ...msg, plainContent: plain });
+                }
+            } catch (e) { continue; }
+        }
+        return results;
     },
 }));

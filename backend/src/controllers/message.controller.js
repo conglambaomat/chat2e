@@ -1,3 +1,29 @@
+// Search messages by keyword for a chat between current user and :id
+export const searchMessages = async (req, res) => {
+  try {
+    const { id: userToChatId } = req.params;
+    const myId = req.user._id;
+    const { query } = req.query;
+    if (!query || !query.trim()) {
+      return res.status(400).json({ error: "Missing search query" });
+    }
+    // Only search in messages between these two users
+    const searchRegex = new RegExp(query, "i");
+    const messages = await Message.find({
+      $or: [
+        { senderId: myId, receiverId: userToChatId },
+        { senderId: userToChatId, receiverId: myId },
+      ],
+      encryptedContent: { $regex: searchRegex },
+    })
+      .sort({ createdAt: 1 })
+      .select('senderId receiverId encryptedContent encryptedKey encryptedKeySender iv createdAt is_file original_file_name file_type file_size file_path file_iv file_encrypted_key file_encrypted_key_sender reactions');
+    res.status(200).json(messages);
+  } catch (error) {
+    console.error("Error in searchMessages: ", error.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
 import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import Conversation from "../models/conversation.model.js";
@@ -36,7 +62,7 @@ export const getMessages = async (req, res) => {
     }
     
     const messages = await Message.find(query)
-      .select('senderId receiverId encryptedContent encryptedKey encryptedKeySender iv createdAt is_file original_file_name file_type file_size file_path file_iv file_encrypted_key file_encrypted_key_sender')
+      .select('senderId receiverId encryptedContent encryptedKey encryptedKeySender iv createdAt is_file original_file_name file_type file_size file_path file_iv file_encrypted_key file_encrypted_key_sender reactions')
       .sort({ createdAt: 1 });
       
     console.log(`[getMessages] Found ${messages.length} messages ${after ? 'after ' + after : ''} between ${myId} and ${userToChatId}`);
