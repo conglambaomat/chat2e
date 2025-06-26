@@ -20,11 +20,13 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
-   
     publicKey: {
         type: String,
         default: "", 
     },
+    friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    friendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Lời mời mình nhận
+    sentRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],   // Lời mời mình đã gửi
   },
   { timestamps: true }
 );

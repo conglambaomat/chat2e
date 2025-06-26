@@ -16,6 +16,16 @@ const fetchPublicKey = async (userId) => {
 };
 
 export const useChatStore = create((set, get) => ({
+    // Lắng nghe realtime khi có bạn mới được chấp nhận
+    subscribeToFriendAccepted: () => {
+        const socket = useAuthStore.getState().socket;
+        if (!socket) return;
+        socket.off("friendAccepted");
+        socket.on("friendAccepted", async () => {
+            // Gọi lại getUsers để cập nhật danh sách bạn bè
+            await get().getUsers();
+        });
+    },
     messages: [],
     users: [],
     selectedUser: null,
@@ -25,10 +35,11 @@ export const useChatStore = create((set, get) => ({
     isFetchingMessages: false,
     hasNewMessages: false,
 
+    // Lấy danh sách bạn bè
     getUsers: async () => {
         set({ isUsersLoading: true });
         try {
-            const res = await axiosInstance.get("/messages/users");
+            const res = await axiosInstance.get("/users/friends");
             // Giữ lại unreadCount cũ nếu có
             const prevUsers = get().users;
             const usersWithUnread = res.data.map(user => {
@@ -37,9 +48,54 @@ export const useChatStore = create((set, get) => ({
             });
             set({ users: usersWithUnread, isUsersLoading: false });
         } catch (error) {
-            console.error("Error fetching users:", error);
-            toast.error(error.response?.data?.message || "Failed to fetch users");
+            console.error("Error fetching friends:", error);
+            toast.error(error.response?.data?.message || "Failed to fetch friends");
             set({ isUsersLoading: false });
+        }
+    },
+
+    // Gửi lời mời kết bạn
+    sendFriendRequest: async (email) => {
+        try {
+            await axiosInstance.post("/users/send-friend-request", { email });
+            toast.success("Đã gửi lời mời kết bạn!");
+        } catch (error) {
+            toast.error(error.response?.data?.message || "Gửi lời mời thất bại");
+        }
+    },
+
+    // Lấy danh sách lời mời kết bạn
+    getFriendRequests: async () => {
+        try {
+            const res = await axiosInstance.get("/users/friend-requests");
+            set({ friendRequests: res.data });
+        } catch (error) {
+            toast.error("Không thể lấy danh sách lời mời");
+        }
+    },
+
+    // Đồng ý kết bạn
+    acceptFriendRequest: async (userId) => {
+        try {
+            await axiosInstance.post("/users/accept-friend-request", { userId });
+            toast.success("Đã chấp nhận kết bạn!");
+            await get().getUsers();
+            await get().getFriendRequests();
+            // Đảm bảo lắng nghe event realtime
+            get().subscribeToFriendAccepted();
+        } catch (error) {
+            toast.error("Không thể chấp nhận kết bạn");
+        }
+    },
+
+    // Từ chối kết bạn
+    declineFriendRequest: async (userId) => {
+        try {
+            await axiosInstance.post("/users/decline-friend-request", { userId });
+            toast.success("Đã từ chối lời mời!");
+            await get().getFriendRequests();
+        } catch (error) {
+            toast.error("Không thể từ chối lời mời");
         }
     },
 
@@ -134,6 +190,9 @@ export const useChatStore = create((set, get) => ({
             console.warn("[subscribeToMessages] Socket not available.");
             return;
         }
+
+        // Đảm bảo lắng nghe realtime bạn bè
+        get().subscribeToFriendAccepted();
 
 
         socket.off("newMessage");
