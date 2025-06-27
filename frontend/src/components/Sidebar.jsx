@@ -92,48 +92,54 @@ const Sidebar = () => {
 
       <div className="overflow-y-auto w-full py-4 flex-1">
         {filteredUsers.map((user) => (
-          <button
+          <div
             key={user._id}
-            onClick={() => setSelectedUser(user)}
-            className={`
-              w-full p-4 flex items-center gap-4 transition-colors hover-scale
-              ${selectedUser?._id === user._id ? "bg-gray-500/20 ring-2 ring-gray-800/50" : "hover:bg-gray-500/10"}
-            `}
+            className={`w-full p-4 flex items-center gap-4 transition-colors hover-scale ${selectedUser?._id === user._id ? "bg-gray-500/20 ring-2 ring-gray-800/50" : "hover:bg-gray-500/10"}`}
           >
-            <div className="relative mx-auto lg:mx-0">
-              <img
-                // image of users.
-                src={user.profilePic || "/avatar.png"}
-                alt={user.name}
-                className="size-10 object-cover rounded border-2 border-gray-600 shadow-[2px_2px_0_#00000080]"
-                style={{ imageRendering: "pixelated" }}
-              />
-              {onlineUsers.includes(user._id) && (
-                <span
-                  // Green circle to indicate online users.
-                  className="absolute bottom-0 right-0 size-4 bg-green-600 \
-                  rounded-full ring-2 ring-gray-500 shadow-[1px_1px_0_#00000080]"
+            <button
+              onClick={() => setSelectedUser(user)}
+              className="flex items-center gap-4 flex-1 text-left"
+              style={{ outline: "none", background: "none", border: "none", padding: 0 }}
+            >
+              <div className="relative mx-auto lg:mx-0">
+                <img
+                  src={user.profilePic || "/avatar.png"}
+                  alt={user.name}
+                  className="size-10 object-cover rounded border-2 border-gray-600 shadow-[2px_2px_0_#00000080]"
+                  style={{ imageRendering: "pixelated" }}
                 />
-              )}
-              {user.unreadCount > 0 && (
-                <span
-                  className="absolute -top-2 -right-2 min-w-[18px] h-[18px] bg-red-600 text-white text-xs flex items-center justify-center rounded-full z-10 font-bold px-1"
-                  style={{ fontFamily: "monospace" }}
-                >
-                  {user.unreadCount}
-                </span>
-              )}
-            </div>
-
-            <div className="hidden lg:block text-left min-w-0 flex-1">
-              <div className="font-medium truncate pixel-font text-gray-800 text-2xl drop-shadow-[1px_1px_1px_#00000080]">
-                {user.fullName}
+                {onlineUsers.includes(user._id) && (
+                  <span className="absolute bottom-0 right-0 size-4 bg-green-600 rounded-full ring-2 ring-gray-500 shadow-[1px_1px_0_#00000080]" />
+                )}
+                {user.unreadCount > 0 && (
+                  <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] bg-red-600 text-white text-xs flex items-center justify-center rounded-full z-10 font-bold px-1" style={{ fontFamily: "monospace" }}>{user.unreadCount}</span>
+                )}
               </div>
-              <div className="pixel-font text-gray-800 text-xl drop-shadow-[1px_1px_1px_#00000080]">
-                {onlineUsers.includes(user._id) ? "Online" : "Offline"}
+              <div className="hidden lg:block text-left min-w-0 flex-1">
+                <div className="font-medium truncate pixel-font text-gray-800 text-2xl drop-shadow-[1px_1px_1px_#00000080]">
+                  {user.fullName}
+                </div>
+                <div className="pixel-font text-gray-800 text-xl drop-shadow-[1px_1px_1px_#00000080]">
+                  {onlineUsers.includes(user._id) ? "Online" : "Offline"}
+                </div>
               </div>
-            </div>
-          </button>
+            </button>
+            {/* Nút xóa bạn */}
+            <button
+              className="ml-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-8 h-8 flex items-center justify-center"
+              title="Xóa bạn bè"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (window.confirm(`Bạn có chắc chắn muốn xóa ${user.fullName} khỏi danh sách bạn bè?`)) {
+                  await useChatStore.getState().removeFriend(user._id);
+                  // Nếu đang chat với user vừa xóa thì bỏ chọn
+                  if (selectedUser?._id === user._id) setSelectedUser(null);
+                }
+              }}
+            >
+              <span style={{ fontSize: 18, fontWeight: "bold" }}>✕</span>
+            </button>
+          </div>
         ))}
 
         {filteredUsers.length === 0 && (

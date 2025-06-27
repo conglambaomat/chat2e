@@ -22,7 +22,6 @@ export const useChatStore = create((set, get) => ({
         if (!socket) return;
         socket.off("friendAccepted");
         socket.on("friendAccepted", async () => {
-            // Gọi lại getUsers để cập nhật danh sách bạn bè
             await get().getUsers();
         });
     },
@@ -184,15 +183,36 @@ export const useChatStore = create((set, get) => ({
         }
     },
 
+    // Xóa bạn bè
+    removeFriend: async (userId) => {
+        try {
+            await axiosInstance.post("/users/remove-friend", { userId });
+            toast.success("Đã xóa bạn bè!");
+            await get().getUsers();
+        } catch (error) {
+            toast.error(error.response?.data?.message || "Xóa bạn bè thất bại");
+        }
+    },
+
+    // Lắng nghe realtime khi bị xóa bạn bè
+    subscribeToFriendRemoved: () => {
+        const socket = useAuthStore.getState().socket;
+        if (!socket) return;
+        socket.off("friendRemoved");
+        socket.on("friendRemoved", async () => {
+            await get().getUsers();
+        });
+    },
+
     subscribeToMessages: () => {
         const socket = useAuthStore.getState().socket;
         if (!socket) {
             console.warn("[subscribeToMessages] Socket not available.");
             return;
         }
-
         // Đảm bảo lắng nghe realtime bạn bè
         get().subscribeToFriendAccepted();
+        get().subscribeToFriendRemoved();
 
 
         socket.off("newMessage");
