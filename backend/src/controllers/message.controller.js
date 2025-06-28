@@ -130,14 +130,12 @@ export const sendMessage = async (req, res) => {
     
     let missingFields = [];
     if (is_file) {
-       
         if (!file_path) missingFields.push('file_path');
-        if (!file_iv) missingFields.push('file_iv');
         if (!file_encrypted_key) missingFields.push('file_encrypted_key');
         if (!file_encrypted_key_sender) missingFields.push('file_encrypted_key_sender');
-        
+        // Only require file_iv if not chunked
+        if (!req.body.chunked && !file_iv) missingFields.push('file_iv');
     } else {
-        
         if (!encryptedContent) missingFields.push('encryptedContent');
         if (!encryptedKey) missingFields.push('encryptedKey');
         if (!encryptedKeySender || typeof encryptedKeySender !== 'string' || encryptedKeySender.length === 0) {
@@ -161,18 +159,21 @@ export const sendMessage = async (req, res) => {
       encryptedKey,
       encryptedKeySender,
       iv,
-      
       ...(is_file && {
-          is_file: true,
-          original_file_name,
-          file_type,
-          file_size,
-          file_path,
-          file_iv,
-          file_encrypted_key,
-          file_encrypted_key_sender
+        is_file: true,
+        original_file_name,
+        file_type,
+        file_size,
+        file_path,
+        file_iv,
+        file_encrypted_key,
+        file_encrypted_key_sender,
+        // Thêm metadata chunked nếu có
+        chunked: req.body.chunked === true || req.body.chunked === 'true',
+        fileId: req.body.fileId || null,
+        totalChunks: req.body.totalChunks || null
       }),
-      read: false 
+      read: false
     });
 
     await newMessage.save();

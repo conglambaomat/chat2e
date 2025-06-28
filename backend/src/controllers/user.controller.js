@@ -16,8 +16,9 @@ export const removeFriend = async (req, res) => {
     // Emit socket event to both users for realtime update
     const mySocketId = getReceiverSocketId(myId.toString());
     const friendSocketId = getReceiverSocketId(userId.toString());
-    if (mySocketId) io.to(mySocketId).emit("friendRemoved", { userId });
-    if (friendSocketId) io.to(friendSocketId).emit("friendRemoved", { userId: myId });
+    // Để frontend xử lý đúng, chỉ emit userId dạng string, không object
+    if (mySocketId) io.to(mySocketId).emit("friendRemoved", userId.toString());
+    if (friendSocketId) io.to(friendSocketId).emit("friendRemoved", myId.toString());
     res.json({ message: "Friend removed successfully" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -75,11 +76,15 @@ export const acceptFriendRequest = async (req, res) => {
     await me.save();
     await friend.save();
 
-    // Emit socket event to both users for realtime update
+    // Lấy thông tin user mới để gửi về cho từng phía
+    const meInfo = await User.findById(myId).select("_id fullName email profilePic publicKey");
+    const friendInfo = await User.findById(userId).select("_id fullName email profilePic publicKey");
+
+    // Emit socket event cho cả hai phía, gửi info user vừa được thêm vào friends
     const mySocketId = getReceiverSocketId(myId.toString());
     const friendSocketId = getReceiverSocketId(userId.toString());
-    if (mySocketId) io.to(mySocketId).emit("friendAccepted", { userId });
-    if (friendSocketId) io.to(friendSocketId).emit("friendAccepted", { userId: myId });
+    if (mySocketId) io.to(mySocketId).emit("friendAccepted", { user: friendInfo });
+    if (friendSocketId) io.to(friendSocketId).emit("friendAccepted", { user: meInfo });
 
     res.json({ message: "Friend request accepted" });
   } catch (err) {

@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { Image, Send, X, Paperclip } from "lucide-react";
+import { Image, Send, X, Paperclip, FileText } from "lucide-react";
 import toast from "react-hot-toast";
 import JSEncrypt from "jsencrypt";
 import { arrayBufferToBase64, base64ToArrayBuffer } from "../lib/utils";
@@ -163,6 +163,8 @@ const MessageInput = () => {
     };
 
 
+    // Chunked file upload with per-chunk encryption
+    const CHUNK_SIZE = 1024 * 1024; // 1MB
     const handleSendFile = useCallback(async () => {
         if (!selectedFile || !selectedUser || !authUser) {
             toast.error("Cannot send file: Missing file, recipient, or sender info.");
@@ -172,86 +174,78 @@ const MessageInput = () => {
             toast.error("Cannot send file: Missing public keys.");
             return;
         }
-
-        const loadingToastId = toast.loading("Encrypting and uploading file...");
-        let fileAesKey = null;
-
+        const loadingToastId = toast.loading("Encrypting and uploading file (chunked)...");
         try {
-
-            fileAesKey = await crypto.subtle.generateKey(
+            // 1. Generate AES key for the file
+            const fileAesKey = await crypto.subtle.generateKey(
                 { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
             );
             const exportedAesKeyBuffer = await crypto.subtle.exportKey("raw", fileAesKey);
             const exportedAesKeyBase64 = arrayBufferToBase64(exportedAesKeyBuffer);
-
-
+            // 2. Encrypt AES key with RSA for both recipient and sender
             const encryptedAesKeyRecipient = encryptAesKeyWithRsa(exportedAesKeyBase64, selectedUser.publicKey);
             const encryptedAesKeySender = encryptAesKeyWithRsa(exportedAesKeyBase64, authUser.publicKey);
-
-
+            // 3. Read file as ArrayBuffer
             const fileBuffer = await selectedFile.arrayBuffer();
-
-
-            const { encryptedContent: encryptedFileBuffer, iv: fileIv } = await encryptBuffer(fileBuffer, fileAesKey);
-
-
-            const encryptedBytesToSend = new Uint8Array(encryptedFileBuffer);
-            console.log(`[handleSendFile] Encrypted Buffer To Send (${encryptedBytesToSend.length} bytes) Start:`, encryptedBytesToSend.slice(0, 16));
-            console.log(`[handleSendFile] Encrypted Buffer To Send End:`, encryptedBytesToSend.slice(-16));
-
-
-            const formData = new FormData();
-
-            formData.append('file', new Blob([encryptedFileBuffer]), selectedFile.name); // Keep original name for potential server-side use, though backend uses UUID
-
-
-            const uploadResponse = await fetch('http://localhost:5001/api/files/upload', {
+            const totalChunks = Math.ceil(fileBuffer.byteLength / CHUNK_SIZE);
+            const fileId = crypto.randomUUID();
+            // 4. Upload each chunk
+            for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                const start = chunkIndex * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, fileBuffer.byteLength);
+                const chunkBuffer = fileBuffer.slice(start, end);
+                // Encrypt chunk
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                const encryptedChunk = await crypto.subtle.encrypt(
+                    { name: "AES-GCM", iv }, fileAesKey, chunkBuffer
+                );
+                // Prepare FormData
+                const formData = new FormData();
+                formData.append('chunk', new Blob([encryptedChunk]), `chunk_${chunkIndex}`);
+                formData.append('fileId', fileId);
+                formData.append('chunkIndex', chunkIndex);
+                formData.append('totalChunks', totalChunks);
+                formData.append('originalName', selectedFile.name);
+                formData.append('iv', arrayBufferToBase64(iv));
+                // Upload chunk
+                const uploadRes = await fetch('http://localhost:5001/api/files/upload-chunk', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'include',
+                });
+                if (!uploadRes.ok) {
+                    throw new Error(`Chunk upload failed at index ${chunkIndex}`);
+                }
+            }
+            // 5. Merge chunks
+            const mergeRes = await fetch('http://localhost:5001/api/files/merge-chunks', {
                 method: 'POST',
-                body: formData,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fileId, totalChunks, originalName: selectedFile.name }),
                 credentials: 'include',
             });
-
-            if (!uploadResponse.ok) {
-                const errorData = await uploadResponse.json();
-                throw new Error(`File upload failed: ${errorData.message || uploadResponse.statusText}`);
+            if (!mergeRes.ok) {
+                throw new Error('Failed to merge file chunks');
             }
-
-            const uploadResult = await uploadResponse.json();
-            const serverFilename = uploadResult.filename;
-
-
-            const fileIvBase64 = arrayBufferToBase64(fileIv);
-            console.log("[handleSendFile] Storing File IV (Base64):", fileIvBase64); // Log the IV being stored
-
-
+            // 6. Send message with file metadata
             const fileMessageData = {
                 is_file: true,
                 original_file_name: selectedFile.name,
                 file_type: selectedFile.type,
                 file_size: selectedFile.size,
-                file_path: serverFilename,
-
-                file_iv: fileIvBase64,
+                file_path: `${fileId}_${selectedFile.name}`,
                 file_encrypted_key: encryptedAesKeyRecipient,
                 file_encrypted_key_sender: encryptedAesKeySender,
-
-
-                encryptedContent: null,
-                encryptedKey: null,
-                encryptedKeySender: null,
-                iv: null
+                chunked: true,
+                totalChunks,
+                fileId,
             };
-
-
-
             await sendMessage(fileMessageData);
-            toast.success("File sent successfully!", { id: loadingToastId });
+            toast.success("File sent successfully! (chunked)", { id: loadingToastId });
             removeSelectedFile();
-
         } catch (error) {
-            console.error("Error sending file:", error);
-            toast.error(`Failed to send file: ${error.message}`, { id: loadingToastId });
-
+            console.error("Error sending file (chunked):", error);
+            toast.error(`Failed to send file: ${error.message}`);
         }
     }, [selectedFile, selectedUser, authUser, sendMessage, removeSelectedFile]);
 
@@ -289,120 +283,96 @@ const MessageInput = () => {
 
         if (encryptedBundle) {
             try {
-
                 await sendMessage(encryptedBundle);
                 setText("");
                 removeImage();
             } catch (error) {
-
                 console.error("handleSendMessage: Error returned from store sendMessage:", error);
-
             }
         }
-    }, [
-        imagePreview, text, selectedUser, authUser, sendMessage, removeImage,
-        selectedFile, handleSendFile
-    ]);
+    }, [text, imagePreview, selectedUser, authUser, sendMessage, handleSendFile, removeImage]);
 
     return (
-        <div className="p-4 w-full">
-            {selectedFile && !imagePreview && (
-                <div className="mb-3 flex items-center gap-2 p-2 rounded-lg bg-base-200 border border-zinc-700">
-                    <Paperclip className="size-5 text-zinc-400" />
-                    <span className="text-sm text-zinc-300 truncate flex-1">
-                        {selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)
-                    </span>
-                    <button
-                        onClick={removeSelectedFile}
-                        className="w-5 h-5 rounded-full bg-base-300 flex items-center justify-center text-zinc-400 hover:text-red-500"
-                        type="button"
-                        aria-label="Remove selected file"
-                    >
-                        <X className="size-3" />
-                    </button>
-                </div>
-            )}
-
-            {imagePreview && (
-                <div className="mb-3 flex items-center gap-2">
-                    <div className="relative">
-                        <img
-                            src={imagePreview}
-                            alt="Preview"
-                            className="w-20 h-20 object-cover rounded-lg border border-zinc-700"
-                        />
-                        <button
-                            onClick={removeImage}
-                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-base-300
-              flex items-center justify-center"
-                            type="button"
-                            aria-label="Remove image preview"
-                        >
-                            <X className="size-3" />
+        <div className="message-input w-full px-2 py-2 bg-gray-800 border-t border-gray-700">
+            <div className="input-area flex items-end gap-2">
+                {/* Hidden file inputs */}
+                <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageChange}
+                    ref={fileInputRef}
+                    style={{ display: "none" }}
+                />
+                <input
+                    type="file"
+                    onChange={handleFileSelect}
+                    ref={fileAttachmentInputRef}
+                    style={{ display: "none" }}
+                />
+                {/* Image preview */}
+                {imagePreview && (
+                    <div className="preview-wrapper relative mr-2">
+                        <img src={imagePreview} alt="Preview" className="max-h-16 rounded shadow" />
+                        <button type="button" className="remove-image absolute top-0 right-0 bg-black/60 rounded-full p-1 text-white" onClick={removeImage}>
+                            <X size={16} />
                         </button>
                     </div>
-                </div>
-            )}
-
-            <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                <div className="flex-1 flex gap-2">
-                    <input
-                        type="text"
-                        className="w-full input input-bordered rounded-lg input-sm sm:input-md"
-                        placeholder="Type an encrypted message..."
-                        value={text}
-                        onChange={(e) => setText(e.target.value)}
-                        disabled={!!imagePreview || !!selectedFile || isSendingMessage}
-                    />
-                    <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        ref={fileInputRef}
-                        onChange={handleImageChange}
-                        disabled={isSendingMessage}
-                        aria-label="Select image"
-                    />
-                    <input
-                        type="file"
-                        className="hidden"
-                        ref={fileAttachmentInputRef}
-                        onChange={handleFileSelect}
-                        disabled={isSendingMessage}
-                        aria-label="Attach file"
-                    />
-
+                )}
+                {/* File preview */}
+                {selectedFile && (
+                    <div className="file-preview flex items-center gap-2 bg-gray-700 rounded px-2 py-1 mr-2 text-white text-xs max-w-xs overflow-hidden">
+                        <FileText className="text-sky-400" size={18} />
+                        <span className="truncate max-w-[120px]" title={selectedFile.name}>{selectedFile.name}</span>
+                        <span className="opacity-70">{(selectedFile.size / 1024 / 1024) >= 1 ? `${(selectedFile.size / 1024 / 1024).toFixed(2)} MB` : `${(selectedFile.size / 1024).toFixed(1)} KB`}</span>
+                        <button type="button" className="remove-file ml-1 text-gray-300 hover:text-red-400" onClick={removeSelectedFile} title="Remove file">
+                            <X size={14} />
+                        </button>
+                    </div>
+                )}
+                {/* Textarea */}
+                <textarea
+                    className="flex-1 resize-none rounded-lg bg-gray-700 text-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500 min-h-[40px] max-h-32"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    placeholder="Type your message..."
+                    disabled={isSendingMessage}
+                    rows={1}
+                />
+                {/* Actions */}
+                <div className="actions flex items-end gap-1 pb-1">
                     <button
                         type="button"
-                        title="Select image"
-                        className={`hidden sm:flex btn btn-circle btn-sm sm:btn-md
-                     ${imagePreview ? "text-emerald-500" : "text-zinc-400"} ${isSendingMessage || selectedFile ? 'btn-disabled opacity-50' : ''}`}
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={isSendingMessage || !!selectedFile}
+                        className="attach-image p-2 rounded bg-gray-700 hover:bg-gray-600 transition"
+                        onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                        disabled={isSendingMessage}
+                        title="Send image"
+                        style={{ opacity: 1, visibility: 'visible' }}
                     >
                         <Image size={20} />
                     </button>
-
                     <button
                         type="button"
+                        className="attach-file p-2 rounded bg-gray-700 hover:bg-gray-600 transition"
+                        onClick={() => fileAttachmentInputRef.current && fileAttachmentInputRef.current.click()}
+                        disabled={isSendingMessage}
                         title="Attach file"
-                        className={`hidden sm:flex btn btn-circle btn-sm sm:btn-md text-zinc-400 ${isSendingMessage || imagePreview ? 'btn-disabled opacity-50' : ''}`}
-                        onClick={() => fileAttachmentInputRef.current?.click()}
-                        disabled={isSendingMessage || !!imagePreview}
+                        style={{ opacity: 1, visibility: 'visible' }}
                     >
                         <Paperclip size={20} />
                     </button>
+                    <button
+                        type="button"
+                        className="send-message p-2 rounded bg-sky-500 hover:bg-sky-600 text-white transition flex items-center justify-center"
+                        onClick={handleSendMessage}
+                        disabled={isSendingMessage}
+                        title="Send message"
+                    >
+                        {isSendingMessage ? "Sending..." : <Send size={20} />}
+                    </button>
                 </div>
-                <button
-                    type="submit"
-                    title="Send message"
-                    className={`btn btn-sm sm:btn-md btn-circle ${isSendingMessage ? 'loading btn-disabled' : ''}`}
-                    disabled={(!text.trim() && !imagePreview && !selectedFile) || isSendingMessage}
-                >
-                    {!isSendingMessage && <Send size={22} />}
-                </button>
-            </form>
+            </div>
         </div>
     );
 };
+
 export default MessageInput;

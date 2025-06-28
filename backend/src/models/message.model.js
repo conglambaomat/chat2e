@@ -58,6 +58,10 @@ const messageSchema = new mongoose.Schema(
     file_iv: { type: String }, 
     file_encrypted_key: { type: String }, 
     file_encrypted_key_sender: { type: String }, 
+    // Chunked file support
+    chunked: { type: Boolean, default: false },
+    fileId: { type: String, default: null },
+    totalChunks: { type: Number, default: null },
     reactions: [
       {
         userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

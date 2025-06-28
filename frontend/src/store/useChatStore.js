@@ -21,8 +21,13 @@ export const useChatStore = create((set, get) => ({
         const socket = useAuthStore.getState().socket;
         if (!socket) return;
         socket.off("friendAccepted");
-        socket.on("friendAccepted", async () => {
-            await get().getUsers();
+        socket.on("friendAccepted", ({ user }) => {
+            if (!user) return;
+            set(state => {
+                // Nếu user đã có trong danh sách thì không thêm lại
+                if (state.users.some(u => u._id === user._id)) return {};
+                return { users: [...state.users, user] };
+            });
         });
     },
     messages: [],
@@ -199,8 +204,13 @@ export const useChatStore = create((set, get) => ({
         const socket = useAuthStore.getState().socket;
         if (!socket) return;
         socket.off("friendRemoved");
-        socket.on("friendRemoved", async () => {
+        socket.on("friendRemoved", async (removedUserId) => {
             await get().getUsers();
+            // Nếu đang chat với người vừa bị hủy kết bạn thì thoát khỏi đoạn chat đó
+            const state = get();
+            if (state.selectedUser && state.selectedUser._id === removedUserId) {
+                set({ selectedUser: null, messages: [] });
+            }
         });
     },
 
@@ -492,6 +502,8 @@ export const useChatStore = create((set, get) => ({
         const results = [];
         for (const msg of messages) {
             try {
+                // Bỏ qua tin nhắn file
+                if (msg.is_file) continue;
                 const isSender = msg.senderId === authUser._id;
                 const keyToUse = isSender ? msg.encryptedKeySender : msg.encryptedKey;
                 if (!keyToUse || !msg.iv || !msg.encryptedContent) continue;
@@ -506,7 +518,7 @@ export const useChatStore = create((set, get) => ({
                 const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuffer }, aesKey, encryptedContentBuffer);
                 const decoder = new TextDecoder();
                 const plain = decoder.decode(decrypted);
-                if (plain.toLowerCase().includes(query.toLowerCase())) {
+                if (plain && plain.toLowerCase().includes(query.toLowerCase())) {
                     results.push({ ...msg, plainContent: plain });
                 }
             } catch (e) { continue; }
