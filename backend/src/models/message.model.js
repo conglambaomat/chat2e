@@ -62,12 +62,21 @@ const messageSchema = new mongoose.Schema(
     chunked: { type: Boolean, default: false },
     fileId: { type: String, default: null },
     totalChunks: { type: Number, default: null },
-    reactions: [
-      {
-        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        emoji: String
+    reactions: [{
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true
+      },
+      emoji: {
+        type: String,
+        required: true
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now
       }
-    ],
+    }],
     
   },
   { timestamps: true }

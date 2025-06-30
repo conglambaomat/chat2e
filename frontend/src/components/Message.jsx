@@ -4,10 +4,11 @@ import { useChatStore } from '../store/useChatStore';
 import { arrayBufferToBase64, base64ToArrayBuffer, formatMessageTime } from '../lib/utils';
 import JSEncrypt from 'jsencrypt';
 import toast from 'react-hot-toast';
-import { Loader, Download, FileText, FileWarning, Trash2 } from 'lucide-react';
+import { Loader, Download, FileText, FileWarning, Trash2, MoreVertical, Smile } from 'lucide-react';
 import DecryptedMessageContent from './DecryptedMessageContent';
+import ReactionPicker from './ReactionPicker';
+import ReactionDisplay from './ReactionDisplay';
 import { axiosInstance } from '../lib/axios';
-
 
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 
@@ -33,6 +34,8 @@ const Message = ({ message }) => {
     const [isDownloading, setIsDownloading] = useState(false);
     const [isReactionPickerOpen, setIsReactionPickerOpen] = useState(false);
     const [isReacting, setIsReacting] = useState(false);
+    const [showOptions, setShowOptions] = useState(false);
+    const [showReactionPicker, setShowReactionPicker] = useState(false);
 
     const isSender = message.senderId === authUser?._id;
     const chatClassName = isSender ? "chat-end" : "chat-start";
@@ -41,36 +44,27 @@ const Message = ({ message }) => {
     const profilePic = isSender ? authUser?.profilePic : selectedUser?.profilePic;
     const formattedTime = formatMessageTime(message.createdAt);
 
-
     const isSelected = selectedMessageId === message._id;
-
 
     console.log(`[Message ${message._id}] Render. isSender: ${isSender}, selectedMessageId: ${selectedMessageId}, isSelected: ${isSelected}`);
 
-
     const handleMessageClick = useCallback(() => {
-
         console.log(`[Message ${message._id}] handleMessageClick fired. isSender: ${isSender}`);
         if (isSender) {
             setSelectedMessageId(message._id);
         } else {
-
             setSelectedMessageId(null);
-
             console.log(`[Message ${message._id}] Clicked received message, clearing selection.`);
         }
     }, [message._id, isSender, setSelectedMessageId]);
 
-
     const handleDeleteClick = useCallback((e) => {
         e.stopPropagation();
-
         console.log(`[Message ${message._id}] handleDeleteClick fired.`);
-        if (window.confirm("Are you sure you want to delete this message?")) {
+        if (window.confirm("Bạn có chắc chắn muốn xóa tin nhắn này?")) {
             deleteMessage(message._id);
         }
     }, [message._id, deleteMessage]);
-
 
     // Chunked file download and decryption
     const handleDownloadFile = useCallback(async () => {
@@ -180,7 +174,6 @@ const Message = ({ message }) => {
         }
     }, [message, privateKey, isSender, setSelectedMessageId]);
 
-
     // Helper: Get reaction summary (emoji -> [userIds])
     const reactionSummary = useMemo(() => {
         const summary = {};
@@ -193,12 +186,10 @@ const Message = ({ message }) => {
         return summary;
     }, [message.reactions]);
 
-
     // Helper: Has current user reacted with this emoji?
     const hasReacted = (emoji) => {
         return reactionSummary[emoji]?.includes(authUser?._id);
     };
-
 
     // Handle reaction click
     const handleReaction = async (emoji) => {
@@ -222,7 +213,6 @@ const Message = ({ message }) => {
         }
     };
 
-
     // Reaction picker UI
     const renderReactionPicker = () => (
         <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-white shadow-lg rounded-full flex z-20 border border-gray-200 p-1">
@@ -238,7 +228,6 @@ const Message = ({ message }) => {
             ))}
         </div>
     );
-
 
     // Render reactions under message
     const renderReactions = () => {
@@ -257,7 +246,6 @@ const Message = ({ message }) => {
             </div>
         );
     };
-
 
     return (
         <div

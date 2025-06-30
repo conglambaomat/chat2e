@@ -12,10 +12,11 @@ const MessageInput = () => {
     const [selectedFile, setSelectedFile] = useState(null);
     const fileInputRef = useRef(null);
     const fileAttachmentInputRef = useRef(null);
-
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadStats, setUploadStats] = useState(null);
+    const [isUploading, setIsUploading] = useState(false);
 
     const authUser = useAuthStore(state => state.authUser);
-
 
     const selectedUser = useChatStore(state => state.selectedUser);
     const sendMessage = useChatStore(state => state.sendMessage);
@@ -55,12 +56,10 @@ const MessageInput = () => {
         if (fileAttachmentInputRef.current) fileAttachmentInputRef.current.value = "";
     }, []);
 
-
     const encryptMessage = async (plainText, recipientPublicKeyPem, senderPublicKeyPem) => {
 
         console.log("EncryptMessage: Recipient Key PEM:", recipientPublicKeyPem ? recipientPublicKeyPem.substring(0, 50) + "..." : "MISSING/INVALID");
         console.log("EncryptMessage: Sender Key PEM:", senderPublicKeyPem ? senderPublicKeyPem.substring(0, 50) + "..." : "MISSING/INVALID");
-
 
         if (!senderPublicKeyPem || typeof senderPublicKeyPem !== 'string' || senderPublicKeyPem.length < 100) { // Basic check
             const errorMsg = "Sender public key is invalid or missing.";
@@ -75,7 +74,6 @@ const MessageInput = () => {
             return null;
         }
 
-
         try {
 
             const aesKey = await crypto.subtle.generateKey(
@@ -85,13 +83,11 @@ const MessageInput = () => {
             const exportedAesKeyBuffer = await crypto.subtle.exportKey("raw", aesKey);
             const exportedAesKeyBase64 = arrayBufferToBase64(exportedAesKeyBuffer);
 
-
             const encoder = new TextEncoder();
             const encodedPlainText = encoder.encode(plainText);
             const encryptedContentBuffer = await crypto.subtle.encrypt(
                 { name: "AES-GCM", iv: iv }, aesKey, encodedPlainText
             );
-
 
             const encryptor = new JSEncrypt();
             encryptor.setPublicKey(recipientPublicKeyPem);
@@ -102,10 +98,8 @@ const MessageInput = () => {
             }
             console.log("EncryptMessage: Recipient encrypted key length:", encryptedAesKeyBase64Recipient.length);
 
-
             encryptor.setPublicKey(senderPublicKeyPem);
             const encryptedAesKeyBase64Sender = encryptor.encrypt(exportedAesKeyBase64);
-
 
             if (!encryptedAesKeyBase64Sender || typeof encryptedAesKeyBase64Sender !== 'string' || encryptedAesKeyBase64Sender.length === 0) {
                 console.error("EncryptMessage: RSA encryption for SENDER failed. Result:", encryptedAesKeyBase64Sender);
@@ -114,8 +108,6 @@ const MessageInput = () => {
                 throw new Error("RSA encryption of AES key failed for sender. Check sender's public key.");
             }
             console.log("EncryptMessage: Sender encrypted key length:", encryptedAesKeyBase64Sender.length);
-
-
 
             const bundle = {
                 encryptedContent: arrayBufferToBase64(encryptedContentBuffer),
@@ -135,7 +127,6 @@ const MessageInput = () => {
         }
     };
 
-
     const encryptBuffer = async (buffer, aesKey) => {
         const iv = crypto.getRandomValues(new Uint8Array(12));
         const encryptedContent = await crypto.subtle.encrypt(
@@ -145,7 +136,6 @@ const MessageInput = () => {
         );
         return { encryptedContent, iv };
     };
-
 
     const encryptAesKeyWithRsa = (aesKeyBase64, publicKeyPem) => {
         try {
@@ -162,9 +152,42 @@ const MessageInput = () => {
         }
     };
 
+    // ✅ CONSTANTS for parallel processing
+    const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunks
+    const MAX_CONCURRENT_UPLOADS = 4; // Upload 4 chunks simultaneously
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 1000; // 1 second
 
-    // Chunked file upload with per-chunk encryption
-    const CHUNK_SIZE = 1024 * 1024; // 1MB
+    // ✅ Upload single chunk with retry mechanism
+    const uploadChunkWithRetry = async (formData, chunkIndex, retryCount = 0) => {
+        const MAX_RETRIES = 3;
+        
+        try {
+            const uploadRes = await fetch('http://localhost:5001/api/files/upload-chunk', {
+                method: 'POST',
+                body: formData,
+                credentials: 'include',
+            });
+            
+            if (!uploadRes.ok) {
+                throw new Error(`HTTP ${uploadRes.status}: ${uploadRes.statusText}`);
+            }
+            
+            return uploadRes;
+        } catch (error) {
+            if (retryCount < MAX_RETRIES) {
+                const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff
+                console.warn(`⚠️ Upload chunk ${chunkIndex} failed, retrying in ${delay}ms... (${retryCount + 1}/${MAX_RETRIES})`);
+                
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return uploadChunkWithRetry(formData, chunkIndex, retryCount + 1);
+            }
+            
+            throw new Error(`Failed to upload chunk ${chunkIndex}: ${error.message}`);
+        }
+    };
+
+    // ✅ COMPLETELY REWRITTEN: Parallel chunked file upload
     const handleSendFile = useCallback(async () => {
         if (!selectedFile || !selectedUser || !authUser) {
             toast.error("Cannot send file: Missing file, recipient, or sender info.");
@@ -174,7 +197,9 @@ const MessageInput = () => {
             toast.error("Cannot send file: Missing public keys.");
             return;
         }
+        
         const loadingToastId = toast.loading("Encrypting and uploading file (chunked)...");
+        
         try {
             // 1. Generate AES key for the file
             const fileAesKey = await crypto.subtle.generateKey(
@@ -182,41 +207,61 @@ const MessageInput = () => {
             );
             const exportedAesKeyBuffer = await crypto.subtle.exportKey("raw", fileAesKey);
             const exportedAesKeyBase64 = arrayBufferToBase64(exportedAesKeyBuffer);
+            
             // 2. Encrypt AES key with RSA for both recipient and sender
             const encryptedAesKeyRecipient = encryptAesKeyWithRsa(exportedAesKeyBase64, selectedUser.publicKey);
             const encryptedAesKeySender = encryptAesKeyWithRsa(exportedAesKeyBase64, authUser.publicKey);
+            
             // 3. Read file as ArrayBuffer
             const fileBuffer = await selectedFile.arrayBuffer();
             const totalChunks = Math.ceil(fileBuffer.byteLength / CHUNK_SIZE);
             const fileId = crypto.randomUUID();
-            // 4. Upload each chunk
-            for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-                const start = chunkIndex * CHUNK_SIZE;
-                const end = Math.min(start + CHUNK_SIZE, fileBuffer.byteLength);
-                const chunkBuffer = fileBuffer.slice(start, end);
-                // Encrypt chunk
-                const iv = crypto.getRandomValues(new Uint8Array(12));
-                const encryptedChunk = await crypto.subtle.encrypt(
-                    { name: "AES-GCM", iv }, fileAesKey, chunkBuffer
-                );
-                // Prepare FormData
-                const formData = new FormData();
-                formData.append('chunk', new Blob([encryptedChunk]), `chunk_${chunkIndex}`);
-                formData.append('fileId', fileId);
-                formData.append('chunkIndex', chunkIndex);
-                formData.append('totalChunks', totalChunks);
-                formData.append('originalName', selectedFile.name);
-                formData.append('iv', arrayBufferToBase64(iv));
-                // Upload chunk
-                const uploadRes = await fetch('http://localhost:5001/api/files/upload-chunk', {
-                    method: 'POST',
-                    body: formData,
-                    credentials: 'include',
-                });
-                if (!uploadRes.ok) {
-                    throw new Error(`Chunk upload failed at index ${chunkIndex}`);
+            
+            // 4. ✅ IMPROVED: Upload chunks in parallel with concurrency control
+            const MAX_CONCURRENT_UPLOADS = 3; // Giới hạn uploads đồng thời
+            const uploadSemaphore = new UploadSemaphore(MAX_CONCURRENT_UPLOADS);
+            
+            const uploadChunkWithSemaphore = async (chunkIndex) => {
+                await uploadSemaphore.acquire();
+                try {
+                    const start = chunkIndex * CHUNK_SIZE;
+                    const end = Math.min(start + CHUNK_SIZE, fileBuffer.byteLength);
+                    const chunkBuffer = fileBuffer.slice(start, end);
+                    
+                    // Encrypt chunk
+                    const iv = crypto.getRandomValues(new Uint8Array(12));
+                    const encryptedChunk = await crypto.subtle.encrypt(
+                        { name: "AES-GCM", iv }, fileAesKey, chunkBuffer
+                    );
+                    
+                    // Prepare FormData
+                    const formData = new FormData();
+                    formData.append('chunk', new Blob([encryptedChunk]), `chunk_${chunkIndex}`);
+                    formData.append('fileId', fileId);
+                    formData.append('chunkIndex', chunkIndex);
+                    formData.append('totalChunks', totalChunks);
+                    formData.append('originalName', selectedFile.name);
+                    formData.append('iv', arrayBufferToBase64(iv));
+                    
+                    // Upload chunk with retry
+                    const uploadRes = await uploadChunkWithRetry(formData, chunkIndex);
+                    
+                    const progress = ((chunkIndex + 1) / totalChunks * 100).toFixed(1);
+                    console.log(`📤 Uploaded chunk ${chunkIndex + 1}/${totalChunks} (${progress}%)`);
+                    
+                    return uploadRes;
+                } finally {
+                    uploadSemaphore.release();
                 }
-            }
+            };
+            
+            // Start all uploads with concurrency control
+            const uploadPromises = Array.from({ length: totalChunks }, (_, i) => 
+                uploadChunkWithSemaphore(i)
+            );
+            
+            await Promise.all(uploadPromises);
+            
             // 5. Merge chunks
             const mergeRes = await fetch('http://localhost:5001/api/files/merge-chunks', {
                 method: 'POST',
@@ -224,9 +269,11 @@ const MessageInput = () => {
                 body: JSON.stringify({ fileId, totalChunks, originalName: selectedFile.name }),
                 credentials: 'include',
             });
+            
             if (!mergeRes.ok) {
                 throw new Error('Failed to merge file chunks');
             }
+            
             // 6. Send message with file metadata
             const fileMessageData = {
                 is_file: true,
@@ -240,9 +287,11 @@ const MessageInput = () => {
                 totalChunks,
                 fileId,
             };
+            
             await sendMessage(fileMessageData);
             toast.success("File sent successfully! (chunked)", { id: loadingToastId });
             removeSelectedFile();
+            
         } catch (error) {
             console.error("Error sending file (chunked):", error);
             toast.error(`Failed to send file: ${error.message}`);
@@ -252,12 +301,10 @@ const MessageInput = () => {
     const handleSendMessage = useCallback(async (e) => {
         e.preventDefault();
 
-
         if (selectedFile) {
             await handleSendFile();
             return;
         }
-
 
         const messageContent = imagePreview || text.trim();
 
@@ -267,7 +314,6 @@ const MessageInput = () => {
             toast.error(`Cannot send message: ${missingData}.`);
             return;
         }
-
 
         if (!selectedUser._id || !authUser._id) {
             toast.error("Cannot send message: User ID missing.");
@@ -279,7 +325,6 @@ const MessageInput = () => {
             selectedUser.publicKey,
             authUser.publicKey
         );
-
 
         if (encryptedBundle) {
             try {
@@ -371,8 +416,54 @@ const MessageInput = () => {
                     </button>
                 </div>
             </div>
+            {/* ✅ Cải thiện hiển thị upload progress */}
+            {uploadProgress > 0 && (
+                <div className="upload-status">
+                    <div className="progress-bar">
+                        <div 
+                            className="progress-fill" 
+                            style={{ width: `${uploadProgress}%` }}
+                        ></div>
+                    </div>
+                    <span>Uploading: {uploadProgress}%</span>
+                    {uploadStats && (
+                        <div className="upload-stats">
+                            <span>Chunks: {uploadStats.successfulChunks}/{uploadStats.totalChunks}</span>
+                            <span>Time: {((uploadStats.endTime - uploadStats.startTime) / 1000).toFixed(1)}s</span>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 };
+
+// ✅ NEW: Upload semaphore class
+class UploadSemaphore {
+    constructor(maxConcurrent) {
+        this.count = maxConcurrent;
+        this.waiters = [];
+    }
+
+    async acquire() {
+        if (this.count > 0) {
+            this.count--;
+            return;
+        }
+
+        return new Promise(resolve => {
+            this.waiters.push(resolve);
+        });
+    }
+
+    release() {
+        this.count++;
+        if (this.waiters.length > 0) {
+            const waiter = this.waiters.shift();
+            this.count--;
+            waiter();
+        }
+    }
+}
 
 export default MessageInput;

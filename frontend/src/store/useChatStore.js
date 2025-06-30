@@ -3,7 +3,6 @@ import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import { useAuthStore } from "./useAuthStore";
 
-
 const fetchPublicKey = async (userId) => {
     try {
         const res = await axiosInstance.get(`/auth/public-key/${userId}`);
@@ -30,6 +29,7 @@ export const useChatStore = create((set, get) => ({
             });
         });
     },
+
     messages: [],
     users: [],
     selectedUser: null,
@@ -38,6 +38,7 @@ export const useChatStore = create((set, get) => ({
     isSendingMessage: false,
     isFetchingMessages: false,
     hasNewMessages: false,
+    selectedMessageId: null,
 
     // Lấy danh sách bạn bè
     getUsers: async () => {
@@ -108,7 +109,6 @@ export const useChatStore = create((set, get) => ({
         try {
             // Get userID to know which users is giving the messages...
             const res = await axiosInstance.get(`/messages/${userId}`);
-
             set({ messages: res.data, isMessagesLoading: false });
         } catch (error) {
             console.error("Error fetching messages:", error);
@@ -134,7 +134,6 @@ export const useChatStore = create((set, get) => ({
 
         set({ isFetchingMessages: true });
         try {
-
             const lastMessageId = state.messages.length > 0
                 ? state.messages[state.messages.length - 1]._id
                 : null;
@@ -142,7 +141,6 @@ export const useChatStore = create((set, get) => ({
             const res = await axiosInstance.get(`/messages/${userId}`, {
                 params: { after: lastMessageId }
             });
-
 
             const newMessages = res.data;
             if (newMessages.length > 0) {
@@ -224,10 +222,9 @@ export const useChatStore = create((set, get) => ({
         get().subscribeToFriendAccepted();
         get().subscribeToFriendRemoved();
 
-
         socket.off("newMessage");
         socket.on("newMessage", (newMessage) => {
-            console.log('[SOCKET] Full newMessage received:', JSON.stringify(newMessage, null, 2)); // Log the entire received object
+            console.log('[SOCKET] Full newMessage received:', JSON.stringify(newMessage, null, 2));
             const state = get();
             const selectedUser = state.selectedUser;
             const currentAuthUser = useAuthStore.getState().authUser;
@@ -240,26 +237,22 @@ export const useChatStore = create((set, get) => ({
             const senderId = newMessage.senderId;
             const receiverId = newMessage.receiverId;
 
-
             const isRelevantToAuthUser = senderId === currentAuthUser._id || receiverId === currentAuthUser._id;
             if (!isRelevantToAuthUser) {
                 console.log("[SOCKET] Message not relevant to current user.");
                 return;
             }
 
-
             const isChatOpen =
                 (senderId === selectedUser?._id && receiverId === currentAuthUser._id) ||
                 (receiverId === selectedUser?._id && senderId === currentAuthUser._id);
 
             if (isChatOpen) {
-
                 const messageExists = state.messages.some(msg => msg._id === newMessage._id);
                 if (!messageExists) {
                     console.log("[SOCKET] Adding new message to OPEN chat state:", newMessage._id);
                     console.log("[SOCKET] Message data being added:", JSON.parse(JSON.stringify(newMessage)));
                     set((prevState) => ({ messages: [...prevState.messages, newMessage] }));
-
 
                     if (senderId === selectedUser?._id) {
                         axiosInstance.post(`/messages/read/${selectedUser._id}`).catch(err => {
@@ -270,10 +263,8 @@ export const useChatStore = create((set, get) => ({
                     console.log("[SOCKET] Skipping duplicate message in OPEN chat:", newMessage._id);
                 }
             } else {
-
                 if (receiverId === currentAuthUser._id) {
                     console.log("[SOCKET] Received message for a CLOSED chat from sender:", senderId);
-
 
                     const senderUser = state.users.find(user => user._id === senderId);
                     if (senderUser) {
@@ -287,27 +278,22 @@ export const useChatStore = create((set, get) => ({
                             )
                         }));
                     } else {
-
                         toast("New message received");
                         console.warn(`[SOCKET] Sender user ${senderId} not found in the user list for notification.`);
                     }
-
                 }
             }
         });
         console.log("[subscribeToMessages] 'newMessage' listener is set up.");
 
-
         socket.off("messageDeleted");
         socket.on("messageDeleted", (data) => {
             console.log(`[SOCKET] Received 'messageDeleted' event. Data:`, data);
-
 
             if (!data || !data.messageId) {
                 console.warn("[SOCKET messageDeleted] Received invalid data format (missing data or messageId).");
                 return;
             }
-
 
             const { messageId, conversationId } = data;
             const state = get();
@@ -316,9 +302,7 @@ export const useChatStore = create((set, get) => ({
 
             console.log(`[SOCKET messageDeleted] State Check: authUser=${authUser?._id}, selectedUser=${currentSelectedUserId}, received conversationId=${conversationId}`);
 
-
             const isChatRelevant = true;
-
 
             console.log(`[SOCKET messageDeleted] Condition Check: isChatRelevant=${isChatRelevant}`);
 
@@ -327,7 +311,6 @@ export const useChatStore = create((set, get) => ({
                 set((prevState) => {
                     const messagesBefore = prevState.messages.length;
                     const messageExists = prevState.messages.some(msg => msg._id === messageId);
-
 
                     if (!messageExists) {
                         console.log(`[SOCKET messageDeleted] Message ${messageId} not found in current state. Skipping removal.`);
@@ -344,21 +327,30 @@ export const useChatStore = create((set, get) => ({
                     };
                 });
             }
-
         });
         console.log("[subscribeToMessages] 'messageDeleted' listener is set up.");
 
-
+        // Cải thiện listener cho messageReaction
         socket.off("messageReaction");
-        socket.on("messageReaction", ({ messageId, reactions }) => {
+        socket.on("messageReaction", (data) => {
+            console.log("[SOCKET] Received messageReaction:", data);
+            
+            if (!data || !data.messageId) {
+                console.warn("[SOCKET] Invalid messageReaction data:", data);
+                return;
+            }
+
+            const { messageId, reactions } = data;
+            
             set((state) => ({
                 messages: state.messages.map(msg =>
-                    msg._id === messageId ? { ...msg, reactions } : msg
+                    msg._id === messageId 
+                        ? { ...msg, reactions: reactions || [] }
+                        : msg
                 )
             }));
         });
         console.log("[subscribeToMessages] 'messageReaction' listener is set up.");
-
     },
 
     unsubscribeFromMessages: () => {
@@ -369,7 +361,6 @@ export const useChatStore = create((set, get) => ({
             socket.off("messageReaction");
         }
     },
-
 
     setSelectedUser: (user) => {
         get().unsubscribeFromMessages();
@@ -395,14 +386,12 @@ export const useChatStore = create((set, get) => ({
         }
     },
 
-
     setupMessageListeners: () => {
         const socket = useAuthStore.getState().socket;
         if (!socket) {
             console.warn("[setupMessageListeners] Socket not available.");
             return;
         }
-
 
         socket.off("receiveNewMessages");
         socket.on("receiveNewMessages", (messages) => {
@@ -427,9 +416,30 @@ export const useChatStore = create((set, get) => ({
                 console.log("[SOCKET] receivedNewMessages event had empty messages array.");
             }
         });
-        console.log("[setupMessageListeners] Listeners (excluding newMessage) are set up.")
-    },
+        console.log("[setupMessageListeners] Listeners (excluding newMessage) are set up.");
 
+        // Lắng nghe reaction updates
+        socket.off("messageReaction");
+        socket.on("messageReaction", (data) => {
+            console.log("[SOCKET] Received messageReaction:", data);
+            
+            if (!data || !data.messageId) {
+                console.warn("[SOCKET] Invalid messageReaction data:", data);
+                return;
+            }
+
+            const { messageId, reactions } = data;
+            
+            set((state) => ({
+                messages: state.messages.map(msg =>
+                    msg._id === messageId 
+                        ? { ...msg, reactions: reactions || [] }
+                        : msg
+                )
+            }));
+        });
+        console.log("[setupMessageListeners] 'messageReaction' listener is set up.");
+    },
 
     setSelectedMessageId: (messageId) => {
         console.log(`[ChatStore] setSelectedMessageId called with: ${messageId}`);
@@ -441,7 +451,6 @@ export const useChatStore = create((set, get) => ({
             };
         });
     },
-
 
     clearSelectedMessageId: () => {
         console.log("[ChatStore] clearSelectedMessageId called.");
@@ -459,7 +468,6 @@ export const useChatStore = create((set, get) => ({
         try {
             const response = await axiosInstance.delete(`/messages/delete/${messageId}`);
             console.log(`[ChatStore] Successfully deleted message ${messageId} on server.`);
-
         } catch (error) {
             console.error(`[ChatStore] Error calling delete API for message ${messageId}:`, error);
             if (error.response) {
@@ -475,15 +483,20 @@ export const useChatStore = create((set, get) => ({
         set((state) => ({
             messages: state.messages.map(msg => {
                 if (msg._id !== messageId) return msg;
+                
                 let newReactions = Array.isArray(msg.reactions) ? [...msg.reactions] : [];
+                
                 if (add) {
-                    // Prevent duplicate reactions from the same user for the same emoji
-                    if (!newReactions.some(r => r.userId === userId && r.emoji === emoji)) {
-                        newReactions.push({ userId, emoji });
+                    // Thêm reaction nếu chưa có
+                    const existingReaction = newReactions.find(r => r.userId === userId && r.emoji === emoji);
+                    if (!existingReaction) {
+                        newReactions.push({ userId, emoji, createdAt: new Date() });
                     }
                 } else {
+                    // Xóa reaction
                     newReactions = newReactions.filter(r => !(r.userId === userId && r.emoji === emoji));
                 }
+                
                 return { ...msg, reactions: newReactions };
             })
         }));
@@ -491,38 +504,98 @@ export const useChatStore = create((set, get) => ({
 
     // Tìm kiếm tin nhắn trong cuộc trò chuyện hiện tại (tìm trên client, giải mã từng message)
     searchMessages: async (query) => {
-        const { messages } = get();
+        const { selectedUser } = get();
         const authUser = useAuthStore.getState().authUser;
         const privateKey = useAuthStore.getState().privateKey;
-        if (!query.trim() || !privateKey || !authUser) return [];
-        // Import giải mã
-        const { JSEncrypt } = await import('jsencrypt');
-        const { base64ToArrayBuffer } = await import('../lib/utils');
-        // Duyệt và giải mã từng message
-        const results = [];
-        for (const msg of messages) {
-            try {
-                // Bỏ qua tin nhắn file
-                if (msg.is_file) continue;
-                const isSender = msg.senderId === authUser._id;
-                const keyToUse = isSender ? msg.encryptedKeySender : msg.encryptedKey;
-                if (!keyToUse || !msg.iv || !msg.encryptedContent) continue;
-                const decryptor = new JSEncrypt();
-                decryptor.setPrivateKey(privateKey);
-                const decryptedAesKeyBase64 = decryptor.decrypt(keyToUse);
-                if (!decryptedAesKeyBase64) continue;
-                const aesKeyBuffer = base64ToArrayBuffer(decryptedAesKeyBase64);
-                const aesKey = await window.crypto.subtle.importKey("raw", aesKeyBuffer, { name: "AES-GCM", length: 256 }, true, ["decrypt"]);
-                const ivBuffer = base64ToArrayBuffer(msg.iv);
-                const encryptedContentBuffer = base64ToArrayBuffer(msg.encryptedContent);
-                const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuffer }, aesKey, encryptedContentBuffer);
-                const decoder = new TextDecoder();
-                const plain = decoder.decode(decrypted);
-                if (plain && plain.toLowerCase().includes(query.toLowerCase())) {
-                    results.push({ ...msg, plainContent: plain });
-                }
-            } catch (e) { continue; }
+
+        if (!query.trim() || !privateKey || !authUser || !selectedUser) {
+            return [];
         }
-        return results;
-    },
+
+        try {
+            // ✅ SỬA: Gọi đúng endpoint có sẵn trong backend
+            const res = await axiosInstance.get(`/messages/search/${selectedUser._id}`, {
+                params: { query: query.trim() }
+            });
+
+            const allMessages = res.data;
+
+            // Import các thư viện cần thiết
+            const JSEncrypt = (await import('jsencrypt')).default;
+            const { base64ToArrayBuffer } = await import('../lib/utils');
+
+            // Duyệt và giải mã từng message để tìm kiếm
+            const results = [];
+            const searchTerm = query.toLowerCase().trim();
+
+            for (const msg of allMessages) {
+                try {
+                    // Bỏ qua tin nhắn file
+                    if (msg.is_file) continue;
+
+                    const isSender = msg.senderId === authUser._id;
+                    const keyToUse = isSender ? msg.encryptedKeySender : msg.encryptedKey;
+
+                    if (!keyToUse || !msg.iv || !msg.encryptedContent) {
+                        console.warn(`Message ${msg._id} missing encryption data`);
+                        continue;
+                    }
+
+                    // Giải mã AES key bằng RSA private key
+                    const decryptor = new JSEncrypt();
+                    decryptor.setPrivateKey(privateKey);
+                    const decryptedAesKeyBase64 = decryptor.decrypt(keyToUse);
+
+                    if (!decryptedAesKeyBase64) {
+                        console.warn(`Cannot decrypt AES key for message ${msg._id}`);
+                        continue;
+                    }
+
+                    // Import AES key
+                    const aesKeyBuffer = base64ToArrayBuffer(decryptedAesKeyBase64);
+                    const aesKey = await window.crypto.subtle.importKey(
+                        "raw",
+                        aesKeyBuffer,
+                        { name: "AES-GCM", length: 256 },
+                        true,
+                        ["decrypt"]
+                    );
+
+                    // Giải mã nội dung tin nhắn
+                    const ivBuffer = base64ToArrayBuffer(msg.iv);
+                    const encryptedContentBuffer = base64ToArrayBuffer(msg.encryptedContent);
+
+                    const decrypted = await window.crypto.subtle.decrypt(
+                        { name: "AES-GCM", iv: ivBuffer },
+                        aesKey,
+                        encryptedContentBuffer
+                    );
+
+                    const decoder = new TextDecoder();
+                    const plainContent = decoder.decode(decrypted);
+
+                    // Kiểm tra xem có phải là hình ảnh base64 không
+                    const isImage = plainContent.startsWith('data:image/');
+
+                    // Chỉ tìm kiếm trong tin nhắn text, bỏ qua hình ảnh
+                    if (!isImage && plainContent && plainContent.toLowerCase().includes(searchTerm)) {
+                        results.push({ ...msg, plainContent });
+                    }
+
+                } catch (e) {
+                    // Bỏ qua tin nhắn không giải mã được
+                    console.warn(`Cannot decrypt message ${msg._id}:`, e.message);
+                    continue;
+                }
+            }
+
+            console.log(`Search completed: Found ${results.length} text messages containing "${query}"`);
+            return results;
+
+        } catch (error) {
+            console.error("Error in searchMessages:", error);
+            toast.error("Lỗi khi tìm kiếm tin nhắn");
+            return [];
+        }
+    }
 }));

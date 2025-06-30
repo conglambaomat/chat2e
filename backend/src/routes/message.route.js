@@ -6,22 +6,20 @@ import { addReaction, removeReaction } from "../controllers/reaction.controller.
 const router = express.Router();
 
 router.get("/users", protectRoute, getUsersForSidebar);
-router.get("/:id", protectRoute, getMessages);
 
-router.post("/send/:id", protectRoute, sendMessage);
-router.post("/read/:id", protectRoute, markMessagesAsRead);
-
-
-
-// Reaction routes
-
-// Search messages
-router.get("/:id/search", protectRoute, searchMessages);
-
+// Reaction routes - ĐẶT TRƯỚC các routes có :id để tránh conflict
 router.post("/:id/reactions", protectRoute, addReaction);
 router.delete("/:id/reactions", protectRoute, removeReaction);
 
-// Xóa tin nhắn
+// Message routes
+router.get("/:id", protectRoute, getMessages);
+router.post("/send/:id", protectRoute, sendMessage);
+router.post("/read/:id", protectRoute, markMessagesAsRead);
+
+// Search messages - ĐẶT TRƯỚC route delete để tránh conflict
+router.get("/search/:id", protectRoute, searchMessages);
+
+// Delete message
 router.delete("/delete/:id", protectRoute, deleteMessage);
 
 export default router;
